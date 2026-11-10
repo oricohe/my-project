@@ -15,20 +15,28 @@ Getting this to work in real conditions is hard. Low SNR, wind, multipath reflec
 
 ### Ground (deterministic, no LLM)
 
-The ground is a Python acoustic simulator built on `pyroomacoustics` and NumPy, seeded for reproducibility.
+The ground is a custom outdoor acoustic propagation simulator written in NumPy/SciPy, seeded for reproducibility. Room simulators such as `pyroomacoustics` assume static sources inside enclosed rooms, so they don't fit a moving drone outdoors. The custom simulator models:
 
-- **Scenario generator:** drone trajectory, rotor harmonic signature (fundamental + harmonics, variable RPM), Doppler, propagation loss, background noise, wind noise, reflections, optional second drone.
-- **Array model:** configurable microphone geometry, with one or more arrays.
-- **Evaluator:** runs a candidate pipeline on a fixed scenario suite and returns:
+- free-field propagation with time-varying fractional delays, which produces Doppler naturally for a moving source
+- spherical spreading loss and atmospheric absorption
+- ground reflection via a single image source (two-ray model)
+
+The ground has three parts:
+
+- **Scenario generator:** drone trajectory, rotor harmonic signature (fundamental + harmonics, variable RPM), background noise, wind noise, optional second drone.
+- **Array model:** two microphone arrays with fixed, given geometry.
+- **Evaluator:** runs a candidate pipeline on a scenario suite and returns:
   - direction error (deg), range error (m), velocity error (m/s)
   - detection rate and false-alarm rate
   - per-scenario breakdown, so failures can be located
 
-Unit tests validate the simulator against analytic cases, such as a static source in free field and pure Doppler shift.
+Unit tests validate the simulator against analytic cases: static source delay and level in free field, the Doppler shift of a constant-velocity source, and two-ray interference pattern.
+
+**Scenario suites:** scenarios are split into a **development suite**, which the agent may run and inspect, and a **held-out test suite**, which the agent never sees. The test suite is used only for the final comparison against the baselines, to prevent overfitting to specific scenarios.
 
 **Ground qualification:**
 - Importable Python API (`simulate(scenario, pipeline) -> metrics`)
-- Free / open source (`pyroomacoustics`, NumPy, SciPy)
+- Free / open source (NumPy, SciPy)
 - Deterministic (fixed seeds)
 - Bounded and fast: a full scenario suite runs in seconds to a minute
 - Testable with `pytest`
@@ -37,13 +45,15 @@ Unit tests validate the simulator against analytic cases, such as a static sourc
 ### Wiring
 
 - The simulator and evaluator are exposed to the agent through a custom **MCP server** with tools such as `run_suite`, `run_scenario`, `get_failures` and `plot_scenario`.
-- A custom skill holds the pipeline building blocks and the conventions for editing them.
+- A custom skill holds the pipeline building-block library and the conventions for composing and extending it.
+
+**Pipeline interface:** a pipeline is defined as a structured config (an ordered graph of blocks with parameters) composed from a library of tested building blocks. The agent can also write a **new block**, but the block enters the library only after it passes its own unit tests (shape/interface checks plus a known-answer test on a simple scenario). This keeps iterations from being wasted on broken code and gives a clear, verifiable way to accept agent-written code.
 - Unit tests on the ground and on the tools run in CI (no secrets, no live agent).
 
 ### Agent loop
 
-1. The agent proposes or edits the estimation pipeline. This can mean the DOA method (GCC-PHAT, SRP-PHAT, MUSIC), harmonic tracking, range estimation (multi-array triangulation, level-based), or tracking (Kalman / particle filter). Array geometry may also be in scope.
-2. The ground runs the scenario suite.
+1. The agent proposes or edits the estimation pipeline. This can mean the DOA method (GCC-PHAT, SRP-PHAT, MUSIC), harmonic tracking, range estimation (multi-array triangulation, level-based), or tracking (Kalman / particle filter). Array geometry is fixed.
+2. The ground runs the development suite.
 3. The agent reads the per-scenario results, identifies failure regimes (e.g. "DOA collapses below 0 dB SNR with reflections"), and forms a hypothesis about the cause.
 4. The agent makes a structural change and the loop repeats.
 
@@ -54,7 +64,7 @@ There are two baselines:
 - **B1, fixed pipeline:** GCC-PHAT + triangulation + Kalman, with parameters tuned by grid search / Bayesian optimization.
 - **B2, random structural search:** random selection among the same pipeline building blocks.
 
-The agent must beat both on the held-out scenario suite, or match them with significantly fewer simulator runs.
+B1 and B2 get the same development suite and the same simulator-call budget as the agent. All three are scored only on the held-out test suite. The agent must beat both, or match them with significantly fewer simulator runs.
 
 ## Success metrics
 
@@ -64,11 +74,13 @@ The agent must beat both on the held-out scenario suite, or match them with sign
 
 ## Scope
 
-**In scope:** simulated environment, a single drone (stretch goal: two), outdoor scenes.
+**In scope:** simulated outdoor environment with ground reflection, a single drone (stretch goal: two), two fixed microphone arrays.
 
 **Out of scope:** drone type classification, real-time embedded deployment.
 
-**Stretch goal:** validation on a real recording made with a low-cost mic array (ESP32 + MEMS microphones).
+**Stretch goals:**
+- Joint optimization of array geometry together with the pipeline (hardware/software co-design).
+- Validation on a real recording made with a low-cost mic array (ESP32 + MEMS microphones).
 
 ## Known risks
 
