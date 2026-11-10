@@ -7,11 +7,13 @@ Degree level: Bachelor’s
 
 ## Problem
 
-Small drones are hard to detect with radar and cameras: they are small and slow, and they fly low and often out of line of sight. Their rotors, though, make a strong harmonic acoustic signature. The goal is a passive system that estimates a drone's **direction (azimuth/elevation), range, and velocity** from microphone-array recordings.
+Small drones are hard to detect with radar and cameras: they are small and slow, and they fly low and often out of line of sight. Their rotors, though, make a strong harmonic acoustic signature. The goal is a passive system that estimates a drone's **direction (azimuth/elevation), range, and velocity** from a **single compact device**: one small microphone array (a few microphones rigidly mounted together, ~10–30 cm aperture).
 
 Getting this to work in real conditions is hard. Low SNR, wind, multipath reflections, changing rotor speed during maneuvers, and multiple drones all break simple pipelines. Today, designing a pipeline that stays robust across these conditions is manual, trial-and-error work.
 
 ## Approach (Approach C)
+
+![System overview](docs/overview.svg)
 
 ### Ground (deterministic, no LLM)
 
@@ -24,7 +26,7 @@ The ground is a custom outdoor acoustic propagation simulator written in NumPy/S
 The ground has three parts:
 
 - **Scenario generator:** drone trajectory, rotor harmonic signature (fundamental + harmonics, variable RPM), background noise, wind noise, optional second drone.
-- **Array model:** two microphone arrays with fixed, given geometry.
+- **Array model:** one compact microphone array with fixed, given geometry (e.g. 4–8 mics in a 3D arrangement), at a known height above ground.
 - **Evaluator:** runs a candidate pipeline on a scenario suite and returns:
   - direction error (deg), range error (m), velocity error (m/s)
   - detection rate and false-alarm rate
@@ -46,13 +48,13 @@ Unit tests validate the simulator against analytic cases: static source delay an
 
 - The simulator and evaluator are exposed to the agent through a custom **MCP server** with tools such as `run_suite`, `run_scenario`, `get_failures` and `plot_scenario`.
 - A custom skill holds the pipeline building-block library and the conventions for composing and extending it.
+- Unit tests on the ground and on the tools run in CI (no secrets, no live agent).
 
 **Pipeline interface:** a pipeline is defined as a structured config (an ordered graph of blocks with parameters) composed from a library of tested building blocks. The agent can also write a **new block**, but the block enters the library only after it passes its own unit tests (shape/interface checks plus a known-answer test on a simple scenario). This keeps iterations from being wasted on broken code and gives a clear, verifiable way to accept agent-written code.
-- Unit tests on the ground and on the tools run in CI (no secrets, no live agent).
 
 ### Agent loop
 
-1. The agent proposes or edits the estimation pipeline. This can mean the DOA method (GCC-PHAT, SRP-PHAT, MUSIC), harmonic tracking, range estimation (multi-array triangulation, level-based), or tracking (Kalman / particle filter). Array geometry is fixed.
+1. The agent proposes or edits the estimation pipeline. This can mean the DOA method (GCC-PHAT, SRP-PHAT, MUSIC), harmonic tracking, range estimation (ground-bounce delay, Doppler–bearing motion analysis, level-based), or tracking (Kalman / particle filter). Array geometry is fixed.
 2. The ground runs the development suite.
 3. The agent reads the per-scenario results, identifies failure regimes (e.g. "DOA collapses below 0 dB SNR with reflections"), and forms a hypothesis about the cause.
 4. The agent makes a structural change and the loop repeats.
@@ -61,7 +63,7 @@ Unit tests validate the simulator against analytic cases: static source delay an
 
 There are two baselines:
 
-- **B1, fixed pipeline:** GCC-PHAT + triangulation + Kalman, with parameters tuned by grid search / Bayesian optimization.
+- **B1, fixed pipeline:** SRP-PHAT DOA + level-based range + Kalman, with parameters tuned by grid search / Bayesian optimization.
 - **B2, random structural search:** random selection among the same pipeline building blocks.
 
 B1 and B2 get the same development suite and the same simulator-call budget as the agent. All three are scored only on the held-out test suite. The agent must beat both, or match them with significantly fewer simulator runs.
@@ -74,7 +76,7 @@ B1 and B2 get the same development suite and the same simulator-call budget as t
 
 ## Scope
 
-**In scope:** simulated outdoor environment with ground reflection, a single drone (stretch goal: two), two fixed microphone arrays.
+**In scope:** simulated outdoor environment with ground reflection, a single drone (stretch goal: two), one fixed compact microphone array.
 
 **Out of scope:** drone type classification, real-time embedded deployment.
 
@@ -84,6 +86,6 @@ B1 and B2 get the same development suite and the same simulator-call budget as t
 
 ## Known risks
 
-- **Range from a single array is weakly observable.** Mitigation: two arrays and triangulation.
+- **Range from a single compact array is weakly observable.** Bearing alone gives no range. The pipeline has to extract it from indirect cues: the delay between the direct and ground-reflected paths (which encodes source height and range given the known array height), Doppler–bearing motion analysis over time, and received level. Choosing and fusing these cues per scenario is a core part of the agent's task. Range is expected to be the least accurate output, and success criteria will be set accordingly.
 - **Doppler-based velocity is confounded by rotor RPM changes.** Mitigation: velocity from the track (direction + range over time).
 - **Sim-to-real gap.** Mitigation: the stretch-goal validation recording.
